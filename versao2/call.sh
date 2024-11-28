@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Caminho para o dataset
-dataset="../datasets/citeseer.edgelist"
+dataset="../datasets/dblp.edgelist"
 
 # Tamanho do clique
-k_cliques=3
+k_cliques=5
 
 # Número mínimo de processos MPI (2 no mínimo)
 num_procs=2

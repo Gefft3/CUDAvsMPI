@@ -41,7 +41,6 @@ public:
     }
 };
 
-// Função para carregar dataset e renomear vértices
 vector<pair<int, int>> rename(const string& dataset) {
     ifstream inputFile(dataset);
     map<int, int> nodeMap;
@@ -72,15 +71,15 @@ __global__ void contagem_cliques_kernel(int* d_vizinhos, int* d_offsets, int num
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int queueIndex = atomicAdd(d_workQueueIndex, 1);
 
-    // Se não houver mais trabalho na fila, a thread deve retornar
+    //acabou, volta
     if (queueIndex >= numVertices) return;
 
     if (tid < numVertices){
 
-    // Consumir um vértice da fila global de trabalho
+    // consome um vertice da fila global de trabalho
     int vertex = d_workQueue[queueIndex];
 
-    // Inicializar o buffer de clique
+    // inicia o buffer de clique
     int cliqueStart = 0;
     d_cliqueBuffer[cliqueStart] = vertex;
     int cliqueSize = 1;
@@ -96,7 +95,7 @@ __global__ void contagem_cliques_kernel(int* d_vizinhos, int* d_offsets, int num
             int vizinho = d_vizinhos[i];
             bool isClique = true;
 
-            // Verifique conectividade com todos os vértices no clique atual
+    
             for (int j = 0; j < cliqueSize; j++) {
                 int cliqueVertex = d_cliqueBuffer[cliqueStart + j];
                 int neighborStart = d_offsets[cliqueVertex];
@@ -140,12 +139,12 @@ int main(int argc, char* argv[]) {
     string dataset = argv[1];
     int k_clique = atoi(argv[2]);
 
-    // Carregar o grafo
+
     vector<pair<int, int>> edges = rename(dataset);
     Graph g(edges);
     int numVertices = g.vertices.size();
 
-    // Preparar dados para GPU
+    //  vetor de vizinhos e um vetor de offsets para acessar os vizinhos de cada vértice
     vector<int> vizinhosFlat;
     vector<int> offsets(numVertices + 1, 0);
     for (int v = 0; v < numVertices; v++) {
@@ -160,7 +159,7 @@ int main(int argc, char* argv[]) {
         workQueue[i] = i;
     }
 
-    // Alocar memória na GPU
+    
     int* d_vizinhos, *d_offsets, *d_cliqueCount, *d_cliqueBuffer, *d_workQueue, *d_workQueueIndex;
     int cliqueBufferSize = numVertices * k_clique;
     cudaMalloc(&d_vizinhos, vizinhosFlat.size() * sizeof(int));
@@ -170,40 +169,30 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_workQueue, workQueue.size() * sizeof(int));
     cudaMalloc(&d_workQueueIndex, sizeof(int));
 
-    // Copiar dados para a GPU
+    // host to device
     cudaMemcpy(d_vizinhos, vizinhosFlat.data(), vizinhosFlat.size() * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_offsets, offsets.data(), offsets.size() * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_workQueue, workQueue.data(), workQueue.size() * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemset(d_cliqueCount, 0, sizeof(int));
     cudaMemset(d_workQueueIndex, 0, sizeof(int));
 
-    // Configurar kernel
-    int threadsPerBlock = 256;
+    //  kernel config 
+    int threadsPerBlock = 256; //professor disse que o ideal é 256 pq a gpu gosta
     int blocksPerGrid = (numVertices + threadsPerBlock - 1) / threadsPerBlock;
 
     auto start = high_resolution_clock::now();
     contagem_cliques_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_vizinhos, d_offsets, numVertices, k_clique, d_cliqueCount, d_cliqueBuffer, d_workQueue, d_workQueueIndex);
     cudaDeviceSynchronize();
 
-    // Verificar erros
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        cerr << "Erro no kernel: " << cudaGetErrorString(err) << endl;
-        return 1;
-    }
-
     auto end = high_resolution_clock::now();
 
-    // Recuperar resultado
     int cliqueCount;
     cudaMemcpy(&cliqueCount, d_cliqueCount, sizeof(int), cudaMemcpyDeviceToHost);
 
-    // Exibir resultados
     duration<double> duration = end - start;
     cout << "Número de cliques: " << cliqueCount << endl;
     cout << "Tempo de execução: " << duration.count() << " segundos" << endl;
 
-    // Liberar memória
     cudaFree(d_vizinhos);
     cudaFree(d_offsets);
     cudaFree(d_cliqueCount);
