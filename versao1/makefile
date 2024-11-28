@@ -1,8 +1,10 @@
 CXX = g++
+NVCC = nvcc
 
 CXXFLAGS = -Wall -g
+NVCCFLAGS = -arch=sm_30
 
-SOURCES = grafo.cpp sort.cpp
+SOURCES = grafo.cu sort.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
 
@@ -11,8 +13,11 @@ EXECUTABLE = programa
 all: $(EXECUTABLE)
 
 $(EXECUTABLE): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJECTS)
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+%.o: %.cu
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 

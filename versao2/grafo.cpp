@@ -1,219 +1,278 @@
 #include <iostream>
 #include <fstream>
-#include <cstring>
-#include <chrono>
-#include <thread>
-#include <map>
 #include <vector>
-#include "sort.h"
-#include <algorithm>
 #include <set>
+#include <map>
+#include <mpi.h>
+#include <algorithm>
+#include <queue>
 
 using namespace std;
-using namespace std::chrono;
 
 class Graph {
-    public:
+public:
+    vector<set<int>> adjList;
+    set<int> vertices;
 
-        vector<pair<int, int>> arestas;
-        vector<set<int>> vizinhos; 
-        set<int> vertices; 
+    // Function to read the graph from a file
+    void readGraph(const string& filename) {
+        ifstream inputFile(filename);
+        if (!inputFile.is_open()) {
+            cerr << "Unable to open file: " << filename << endl;
+            exit(EXIT_FAILURE);
+        }
 
-        Graph(vector<pair<int, int>> edgeList) {
-            for (auto edge : edgeList) {
-                const int tamanho_vizinhos = vizinhos.size();
-                if (tamanho_vizinhos <= max(edge.first, edge.second)) {
-                    vizinhos.resize(max(edge.first, edge.second) + 1);
-                }
-                arestas.push_back(edge);
-                vertices.insert(edge.first); 
-                vertices.insert(edge.second); 
-                vizinhos[edge.first].insert(edge.second); 
-                vizinhos[edge.second].insert(edge.first); 
+        map<int, int> vertexMapping;
+        int vertexCounter = 0;
+        int u, v;
+        vector<pair<int, int>> edges;
+
+        while (inputFile >> u >> v) {
+            if (vertexMapping.find(u) == vertexMapping.end()) {
+                vertexMapping[u] = vertexCounter++;
+                vertices.insert(vertexMapping[u]);
+            }
+            if (vertexMapping.find(v) == vertexMapping.end()) {
+                vertexMapping[v] = vertexCounter++;
+                vertices.insert(vertexMapping[v]);
+            }
+            u = vertexMapping[u];
+            v = vertexMapping[v];
+            edges.emplace_back(u, v);
+        }
+
+        adjList.resize(vertexCounter);
+
+        for (auto& edge : edges) {
+            adjList[edge.first].insert(edge.second);
+            adjList[edge.second].insert(edge.first);
+        }
+
+        inputFile.close();
+    }
+
+    // Function to get the neighbors of a vertex
+    vector<int> getNeighbours(int vertex) {
+        return vector<int>(adjList[vertex].begin(), adjList[vertex].end());
+    }
+
+    // Function to check if a vertex is in the clique
+    bool esta_na_clique(int vertex, vector<int>& clique) {
+        return find(clique.begin(), clique.end(), vertex) != clique.end();
+    }
+
+    // Function to check if a vertex connects to all vertices in the clique
+    bool se_conecta_a_todos_os_vertices_da_clique(int vertex, vector<int>& clique) {
+        for (int v : clique) {
+            if (adjList[vertex].find(v) == adjList[vertex].end()) {
+                return false;
             }
         }
+        return true;
+    }
 
-        int contagem_cliques_serial(int k);
-        bool esta_na_clique(int vertex, vector<int> clique);
-        bool se_conecta_a_todos_os_vertices_da_clique(int vertex, vector<int> clique);
-        bool formar_clique(int vertex, vector<int> clique);
+    // Function to determine if a vertex can form a clique with the current clique
+    bool formar_clique(int vertex, vector<int>& clique) {
+        return se_conecta_a_todos_os_vertices_da_clique(vertex, clique) && !esta_na_clique(vertex, clique);
+    }
 
-        vector<int> getNeighbours(int vertex) {
-            vector<int> neighbours;
-            for (int neighbour : vizinhos[vertex]) {
-                neighbours.push_back(neighbour);
-            }
-            return neighbours;
-        }
-
-        bool isNeighbour(int vertex, int neighbour) {
-            return vizinhos[vertex].find(neighbour) != vizinhos[vertex].end();
-        }
-
-        void printar_grafo() {
-            for (auto v : vertices) {
-                cout << v << ": ";
-                for (auto n : vizinhos[v]) {
-                    cout << n << " ";
-                }
-                cout << endl;
-            }
-        }
-
-        void printar_clique(vector<int> clique) {
-            for (auto v : clique) {
-                cout << v << " ";
-            }
-        }
-
-        void release() {
-            arestas.clear();
-            vertices.clear();
-            vizinhos.clear();
-        }
+    // Function to perform the parallel clique counting
+    int contagem_cliques_parallel(int k, int rank, int size);
 };
 
+int Graph::contagem_cliques_parallel(int k, int rank, int size) {
+    int clique_count = 0;
 
-vector<pair<int, int>> rename(const string& dataset) {
-    
-    ifstream inputFile(dataset);
-    map<int, int> nodeMap;
-    vector<pair<int, int>> edges;
-    int nodeCounter = 0;
-    
-    if (!inputFile.is_open()) {
-        cerr << "nao abriu, arquivo: " << dataset << endl;
-    }
-
-    int u, v;
-
-    while (inputFile >> u >> v) {
-        if (nodeMap.find(u) == nodeMap.end()) {
-            nodeMap[u] = nodeCounter++;
+    if (rank == 0) {
+        // Manager process
+        queue<int> vertexQueue;
+        for (int v : vertices) {
+            vertexQueue.push(v);
         }
-        if (nodeMap.find(v) == nodeMap.end()) {
-            nodeMap[v] = nodeCounter++;
+
+        int numWorkers = size - 1;
+        int activeWorkers = numWorkers;
+
+        // Send initial vertices to workers
+        for (int i = 1; i <= numWorkers; ++i) {
+            if (!vertexQueue.empty()) {
+                int vertex = vertexQueue.front();
+                vertexQueue.pop();
+                MPI_Send(&vertex, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+            } else {
+                // No more vertices to process
+                int stopSignal = -1;
+                MPI_Send(&stopSignal, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+                --activeWorkers;
+            }
         }
-        edges.push_back({nodeMap[u], nodeMap[v]});
-    }
 
-    inputFile.close();
+        // Receive results and send new vertices
+        while (activeWorkers > 0) {
+            int workerRank;
+            MPI_Status status;
+            int localCliqueCount;
 
-    return edges;
-}
+            // Receive local clique count from any worker
+            MPI_Recv(&localCliqueCount, 1, MPI_INT, MPI_ANY_SOURCE, 1, MPI_COMM_WORLD, &status);
+            workerRank = status.MPI_SOURCE;
+            clique_count += localCliqueCount;
 
-bool Graph::esta_na_clique(int vertex, vector<int> clique) {
-    for (size_t i = 0; i < clique.size(); i++) {
-        if (vertex == clique[i]) {
-            return true;
+            if (!vertexQueue.empty()) {
+                int vertex = vertexQueue.front();
+                vertexQueue.pop();
+                MPI_Send(&vertex, 1, MPI_INT, workerRank, 0, MPI_COMM_WORLD);
+            } else {
+                int stopSignal = -1;
+                MPI_Send(&stopSignal, 1, MPI_INT, workerRank, 0, MPI_COMM_WORLD);
+                --activeWorkers;
+            }
         }
-    }
-    return false;
-}
 
-bool Graph::se_conecta_a_todos_os_vertices_da_clique(int vertex, vector<int> clique) {
-    for (int v : clique) {
-        if (!isNeighbour(vertex, v)) {
-            return false;
-        }
-    }
-    return true;
-}
+        // Now, the manager has collected results from all workers
+        cout << "Resultado final: " << clique_count << endl;
 
-bool Graph::formar_clique(int vertex, vector<int> clique) {
-    bool cond1 = se_conecta_a_todos_os_vertices_da_clique(vertex, clique);
-    bool cond2 = esta_na_clique(vertex, clique);
+    } else {
+        // Worker process
 
-    //cout << "vertice vizinho: " << vertex << endl;
-    //cout << "se conecta a todos (tem que): " << cond1 << endl;
-    //cout << "já está na clique (não pode): " << cond2 << endl;
-
-    bool condf = (cond1 && !cond2); 
-    //cout << "decisão: " << condf << endl;
-    return condf;
-}
-
-
-
-int Graph::contagem_cliques_serial(int k) {
-    set<vector<int>> cliques;
-
-    
-
-    for(auto v: vertices) {
-        cliques.insert({v});
-    }
-
-    int count = 0;
-    // int iteracoes = 0;
-    while(!cliques.empty()){
-        //cout << "-----------------------------------" << endl;
-        //cout << "interação - " << ++iteracoes << endl;
-        
-        vector<int> clique = *cliques.cbegin();
-        //cout << "Size of cliques before pop: " << cliques.size() << endl;
-        
-        cliques.erase(find(cliques.begin(), cliques.end(), clique));
-        //cout << "Size of cliques after pop: " << cliques.size() << endl;
-
-        
-        //cout << "Clique atual: ";
-        // printar_clique(clique);
-        //cout << endl;
-        int tamanho_clique = clique.size();
-        if(tamanho_clique == k){
-            //cout << "Clique encontrada: ";
-            count++;
-            continue;
-        }
-        
-        int ultimo_vertice = clique.back();
-        
-        //cout << "Ultimo vertice: " << ultimo_vertice << endl;
-
-        for(int vertice : clique){
-            vector<int> vizinhos_atual = getNeighbours(vertice); 
-            //cout << "Vizinhos do vertice " << vertice << ": ";
-            // for(auto v: vizinhos_atual){
-                //cout << v << " ";
-            // }
-            //cout << endl;
-            
-            
-            for(int vizinho: vizinhos_atual){
-                if(vizinho > ultimo_vertice && formar_clique(vizinho, clique)){
-                    //cout << "ENTROU!!! " << endl;
-                    vector<int> nova_clique = clique;
-                    nova_clique.push_back(vizinho);
-                    cliques.insert(nova_clique);
+        // Receive the adjacency list from the manager
+        int numVertices;
+        if (adjList.empty()) {
+            // Send request to manager to get the adjacency list
+            MPI_Bcast(&numVertices, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            adjList.resize(numVertices);
+            for (int i = 0; i < numVertices; ++i) {
+                int numNeighbors;
+                MPI_Bcast(&numNeighbors, 1, MPI_INT, 0, MPI_COMM_WORLD);
+                if (numNeighbors > 0) {
+                    vector<int> neighbors(numNeighbors);
+                    MPI_Bcast(&neighbors[0], numNeighbors, MPI_INT, 0, MPI_COMM_WORLD);
+                    adjList[i].insert(neighbors.begin(), neighbors.end());
                 }
             }
         }
 
-        //cout << "voltou para cima" << endl;
+        while (true) {
+            // Receive a vertex to process
+            int vertex;
+            MPI_Recv(&vertex, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
+            if (vertex == -1) {
+                // No more vertices to process
+                break;
+            }
+
+            // Perform clique counting starting from the received vertex
+            set<vector<int>> local_cliques;
+            local_cliques.insert({vertex});
+            int localCliqueCount = 0;
+
+            while (!local_cliques.empty()) {
+                vector<int> clique = *local_cliques.begin();
+                local_cliques.erase(local_cliques.begin());
+
+                if ((int)clique.size() == k) {
+                    localCliqueCount++;
+                    continue;
+                }
+
+                // Get the intersection of neighbors of all vertices in the clique
+                set<int> candidateVertices(adjList[clique[0]]);
+                for (size_t i = 1; i < clique.size(); ++i) {
+                    set<int> tempSet;
+                    set_intersection(candidateVertices.begin(), candidateVertices.end(),
+                                     adjList[clique[i]].begin(), adjList[clique[i]].end(),
+                                     inserter(tempSet, tempSet.begin()));
+                    candidateVertices = tempSet;
+                }
+
+                // Consider only vertices with IDs greater than the last vertex in the clique to avoid duplicates
+                int lastVertex = clique.back();
+                for (int neighbor : candidateVertices) {
+                    if (neighbor > lastVertex) {
+                        vector<int> newClique = clique;
+                        newClique.push_back(neighbor);
+                        local_cliques.insert(newClique);
+                    }
+                }
+            }
+
+            // Send the local clique count back to the manager
+            MPI_Send(&localCliqueCount, 1, MPI_INT, 0, 1, MPI_COMM_WORLD);
+        }
     }
-    
-    return count;
+
+    return clique_count;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
 
-    string dataset = argv[1];
+    int rank, size;
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (argc < 3) {
+        if (rank == 0) {
+            cerr << "Usage: " << argv[0] << " <dataset_file> <k_clique>" << endl;
+        }
+        MPI_Finalize();
+        return -1;
+    }
+
+    string datasetFile = argv[1];
     int k_clique = atoi(argv[2]);
 
-    vector<pair<int, int>> edges = rename(dataset);
-    Graph* g = new Graph(edges);
-    
+    Graph g;
 
-    auto start = high_resolution_clock::now();
-    int clique_count = g->contagem_cliques_serial(k_clique);
-    auto end = chrono::high_resolution_clock::now();
-    duration<double> duration = end - start;
-    
-    cout << "Resultado: " << clique_count << endl;
-    cout << "Tempo de execução: " << duration.count() << " segundos" << endl;
-    
-    g->release();
-    delete g;
+    if (rank == 0) {
+        // Manager reads the graph from the dataset
+        g.readGraph(datasetFile);
+
+        // Broadcast the adjacency list to workers
+        int numVertices = g.adjList.size();
+        MPI_Bcast(&numVertices, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        for (int i = 0; i < numVertices; ++i) {
+            int numNeighbors = g.adjList[i].size();
+            MPI_Bcast(&numNeighbors, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if (numNeighbors > 0) {
+                vector<int> neighbors(g.adjList[i].begin(), g.adjList[i].end());
+                MPI_Bcast(&neighbors[0], numNeighbors, MPI_INT, 0, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        // Workers receive the adjacency list
+        int numVertices;
+        MPI_Bcast(&numVertices, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        g.adjList.resize(numVertices);
+
+        for (int i = 0; i < numVertices; ++i) {
+            int numNeighbors;
+            MPI_Bcast(&numNeighbors, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if (numNeighbors > 0) {
+                vector<int> neighbors(numNeighbors);
+                MPI_Bcast(&neighbors[0], numNeighbors, MPI_INT, 0, MPI_COMM_WORLD);
+                g.adjList[i].insert(neighbors.begin(), neighbors.end());
+            }
+        }
+    }
+
+    // Start timing
+    MPI_Barrier(MPI_COMM_WORLD);
+    double start_time = MPI_Wtime();
+
+    g.contagem_cliques_parallel(k_clique, rank, size);
+
+    // End timing
+    MPI_Barrier(MPI_COMM_WORLD);
+    double end_time = MPI_Wtime();
+
+    if (rank == 0) {
+        cout << "Execution time: " << end_time - start_time << " seconds" << endl;
+    }
+
+    MPI_Finalize();
+    return 0;
 }
